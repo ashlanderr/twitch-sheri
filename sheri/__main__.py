@@ -7,6 +7,7 @@ from .agent import Agent
 from .config import Config, load_config
 from .console import ConsoleChannel, read_console
 from .events import EventQueue
+from .hearing import Hearing
 from .llm import RouterAI
 from .memory import Memory
 from .tools import Tools
@@ -22,16 +23,31 @@ def build_agent(config: Config, channel) -> tuple[Agent, EventQueue]:
     return agent, EventQueue(config.debounce_seconds, config.batch_max_wait_seconds, config.max_batch)
 
 
-async def run_console(config: Config) -> None:
+async def run_voice_server(config: Config, queue: EventQueue) -> None:
+    # Тяжёлые импорты только тут: клиенту и чату torch не нужен.
+    from .voice.server import serve_voice
+    from .voice.stt import GigaAMTranscriber
+
+    hearing = Hearing(
+        queue, config.voice_speaker, config.voice_context_seconds, config.voice_followup_seconds
+    )
+    transcriber = await asyncio.to_thread(GigaAMTranscriber, config.stt_model)
+    await serve_voice(config.voice_host, config.voice_port, config.voice_token, transcriber, hearing.hear)
+
+
+async def run_console(config: Config, voice: bool) -> None:
     agent, queue = build_agent(config, ConsoleChannel())
-    worker = asyncio.create_task(agent.run(queue))
+    workers = [asyncio.create_task(agent.run(queue))]
+    if voice:
+        workers.append(asyncio.create_task(run_voice_server(config, queue)))
     try:
         await read_console(queue)
     finally:
-        worker.cancel()
+        for worker in workers:
+            worker.cancel()
 
 
-async def run_twitch(config: Config) -> None:
+async def run_twitch(config: Config, voice: bool) -> None:
     if not config.twitch_client_id:
         sys.exit("Укажи TWITCH_CLIENT_ID в файле .env")
     tokens_dir = config.data_dir / "tokens"
@@ -44,7 +60,22 @@ async def run_twitch(config: Config) -> None:
         TokenStore(tokens_dir / "broadcaster.json", config.twitch_client_id),
     )
     agent, queue = build_agent(config, channel)
-    await asyncio.gather(agent.run(queue), channel.read_chat(queue))
+    tasks = [agent.run(queue), channel.read_chat(queue)]
+    if voice:
+        tasks.append(run_voice_server(config, queue))
+    await asyncio.gather(*tasks)
+
+
+def run_voice_client(config: Config, args: argparse.Namespace) -> None:
+    from .voice.client import list_devices, run_client
+
+    if args.list_devices:
+        list_devices()
+        return
+    if not config.voice_token:
+        sys.exit("Укажи в .env тот же VOICE_TOKEN, что и на сервере")
+    device = int(args.device) if args.device and args.device.isdigit() else args.device
+    asyncio.run(run_client(args.server, config.voice_token, device))
 
 
 def main() -> None:
@@ -52,19 +83,26 @@ def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(prog="sheri")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("console", help="проверка без Twitch")
-    commands.add_parser("twitch", help="работа в чате Twitch")
+    for name, text in (("console", "проверка без Twitch"), ("twitch", "работа в чате Twitch")):
+        command = commands.add_parser(name, help=text)
+        command.add_argument("--voice", action="store_true", help="включить сервер распознавания голоса")
     login = commands.add_parser("login", help="вход в аккаунт Twitch")
     login.add_argument("account", choices=["bot", "broadcaster"])
+    client = commands.add_parser("voice-client", help="снимать микрофон и отправлять на сервер голоса")
+    client.add_argument("--server", default="ws://127.0.0.1:8765", help="адрес сервера голоса")
+    client.add_argument("--device", help="номер или имя микрофона")
+    client.add_argument("--list-devices", action="store_true", help="показать микрофоны")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     config = load_config()
     if args.command == "console":
-        asyncio.run(run_console(config))
+        asyncio.run(run_console(config, args.voice))
     elif args.command == "twitch":
-        asyncio.run(run_twitch(config))
+        asyncio.run(run_twitch(config, args.voice))
+    elif args.command == "voice-client":
+        run_voice_client(config, args)
     else:
         if not config.twitch_client_id:
             sys.exit("Укажи TWITCH_CLIENT_ID в файле .env")

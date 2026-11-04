@@ -10,6 +10,7 @@ log = logging.getLogger(__name__)
 
 MAX_CHAT_MESSAGE = 450
 MAX_TIMEOUT_SECONDS = 1_209_600
+DONE_HINT = "Готово, повторять не нужно: заверши ход через say или stay_silent."
 
 
 class Channel(Protocol):
@@ -158,16 +159,18 @@ class Tools:
         seconds = int(args["seconds"])
         if not 1 <= seconds <= MAX_TIMEOUT_SECONDS:
             raise ToolError(f"таймаут от 1 до {MAX_TIMEOUT_SECONDS} секунд")
-        await self.channel.timeout_user(_login(args["login"]), seconds, args["reason"])
-        return "таймаут выдан"
+        login = _login(args["login"])
+        await self.channel.timeout_user(login, seconds, args["reason"])
+        return f"{login} получил таймаут на {seconds} с. {DONE_HINT}"
 
     async def _ban_user(self, args: dict, ctx: TurnContext) -> str:
-        await self.channel.ban_user(_login(args["login"]), args["reason"])
-        return "забанен"
+        login = _login(args["login"])
+        await self.channel.ban_user(login, args["reason"])
+        return f"{login} забанен. {DONE_HINT}"
 
     async def _set_title(self, args: dict, ctx: TurnContext) -> str:
         await self.channel.set_title(args["title"])
-        return "название изменено"
+        return f"название изменено на «{args['title']}». {DONE_HINT}"
 
 
 def _login(value: str) -> str:

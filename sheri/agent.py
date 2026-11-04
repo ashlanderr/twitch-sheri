@@ -79,6 +79,7 @@ class Agent:
 
     async def _turn(self, content: str, ctx: TurnContext) -> None:
         self.history.append({"role": "user", "content": content})
+        done: set[tuple[str, str]] = set()
         try:
             for _ in range(self.config.max_tool_rounds):
                 messages = [{"role": "system", "content": self.system_prompt}, *self.history]
@@ -89,13 +90,17 @@ class Agent:
                     break
                 finished = False
                 for call in calls:
-                    result = await self.tools.call(
-                        call["function"]["name"], call["function"]["arguments"], ctx
-                    )
-                    self.history.append(
-                        {"role": "tool", "tool_call_id": call["id"], "content": result.text}
-                    )
-                    finished = finished or result.ends_turn
+                    key = (call["function"]["name"], call["function"]["arguments"])
+                    if key in done:
+                        # Модель иногда повторяет уже сделанное действие вместо завершения хода.
+                        text = "уже выполнено в этом ходе, не повторяй. Заверши ход: say или stay_silent"
+                    else:
+                        result = await self.tools.call(*key, ctx)
+                        text = result.text
+                        finished = finished or result.ends_turn
+                        if not text.startswith(("ошибка", "отказано")):
+                            done.add(key)
+                    self.history.append({"role": "tool", "tool_call_id": call["id"], "content": text})
                 if finished:
                     break
         finally:

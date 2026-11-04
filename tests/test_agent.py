@@ -199,6 +199,34 @@ async def test_tool_loop_is_bounded(config):
     assert len(llm.requests) == 3
 
 
+async def test_repeated_action_in_one_turn_runs_once(config):
+    replies = [call("set_title", str(n), title="Elden Ring") for n in range(3)] + [call("stay_silent", "9")]
+    agent, llm, channel, _ = make(config, replies)
+    await agent.handle([Event("test", Role.BROADCASTER, "Mo0nlaght", "смени название")])
+    assert channel.titles == ["Elden Ring"]
+    repeats = [m["content"] for m in agent.history if m["role"] == "tool"][1:3]
+    assert all("уже выполнено" in text for text in repeats)
+    assert len(llm.requests) == 4
+
+
+async def test_failed_action_can_be_retried(config):
+    replies = [call("timeout_user", "1", login="v", seconds="0", reason="x"),
+               call("timeout_user", "2", login="v", seconds="0", reason="x")]
+    agent, _, _, _ = make(config, replies)
+    await agent.handle([Event("test", Role.MODERATOR, "mod", "таймаут")])
+    results = [m["content"] for m in agent.history if m["role"] == "tool"]
+    assert all(text.startswith("ошибка") for text in results)
+
+
+async def test_same_action_in_next_turn_is_allowed(config):
+    agent, _, channel, _ = make(config, [call("set_title", title="A"), call("stay_silent", "2"),
+                                         call("set_title", title="A")])
+    broadcaster = Event("test", Role.BROADCASTER, "Mo0nlaght", "смени название")
+    await agent.handle([broadcaster])
+    await agent.handle([broadcaster])
+    assert channel.titles == ["A", "A"]
+
+
 async def test_say_and_silence_end_turn_without_extra_request(config):
     agent, llm, channel, _ = make(
         config, [call("say", text="мяу"), call("stay_silent", comment="это Любе, не мне")]

@@ -46,6 +46,42 @@
 
 Если озвучка фильтрует ботов, добавь аккаунт Шери в исключения.
 
+## Голос
+
+Клиент на стрим-компе снимает микрофон, вырезает фразы с помощью Silero VAD и отправляет их на сервер. Сервер распознаёт их через GigaAM и передаёт агенту. Фраза с именем «Шери» запускает ход. Вместе с ней агент получает последние 90 секунд речи, а 20 секунд после обращения слушает реплики и без имени.
+
+В `.env` на обеих машинах нужен одинаковый `VOICE_TOKEN`, любая длинная случайная строка.
+
+Серверу нужны torch и GigaAM, около 3 ГБ. При первом запуске он скачает веса модели, ещё около 430 МБ:
+
+```bash
+.venv/Scripts/python -m pip install -r requirements-server.txt
+```
+
+Сервер, вместе с ботом:
+
+```bash
+.venv/Scripts/python -m sheri twitch --voice
+```
+
+Клиент: сначала найди номер микрофона, потом подключись к серверу.
+
+```bash
+.venv/Scripts/python -m sheri voice-client --list-devices
+```
+
+```bash
+.venv/Scripts/python -m sheri voice-client --server ws://<адрес_ноута>:8765 --device <номер>
+```
+
+Клиенту нужны только `numpy`, `sounddevice`, `onnxruntime`, `websockets` и `python-dotenv`, torch ему не нужен.
+
+Проверка распознавания на записи стрима:
+
+```bash
+.venv/Scripts/python scripts/transcribe_file.py запись.mp4 --start 10:00 --duration 600
+```
+
 ## Устройство
 
 - `prompts/system.md`: характер, правила и уровни доступа. `prompts/people.md`: кто есть кто.

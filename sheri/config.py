@@ -26,6 +26,14 @@ class Config:
     prompts_dir: Path = ROOT / "prompts"
     data_dir: Path = ROOT / "data"
     twitch_client_id: str = ""
+    # Голос: сервер распознавания слушает клиент, который снимает микрофон.
+    voice_host: str = "0.0.0.0"
+    voice_port: int = 8765
+    voice_token: str = ""
+    voice_speaker: str = "Mo0nlaght"
+    voice_context_seconds: float = 90.0
+    voice_followup_seconds: float = 20.0
+    stt_model: str = "v3_e2e_rnnt"
 
 
 def load_config() -> Config:
@@ -35,4 +43,7 @@ def load_config() -> Config:
         model=os.getenv("SHERI_MODEL", Config.model),
         reasoning_effort=os.getenv("SHERI_REASONING_EFFORT", Config.reasoning_effort),
         twitch_client_id=os.getenv("TWITCH_CLIENT_ID", ""),
+        voice_port=int(os.getenv("VOICE_PORT", Config.voice_port)),
+        voice_token=os.getenv("VOICE_TOKEN", ""),
+        stt_model=os.getenv("STT_MODEL", Config.stt_model),
     )

@@ -1,0 +1,6 @@
+# Распознавание речи, нужно только серверу голоса. Ставится после requirements.txt:
+#   pip install -r requirements-server.txt
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch>=2.6
+torchaudio>=2.6
+gigaam @ git+https://github.com/salute-developers/GigaAM
