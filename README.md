@@ -38,6 +38,16 @@
 .venv/Scripts/python -m sheri login broadcaster
 ```
 
+Если приложение в консоли зарегистрировать нельзя (там нужна 2FA), токены можно взять на [twitchtokengenerator.com](https://twitchtokengenerator.com): Custom Scope Token, для бота права `user:bot user:read:chat user:write:chat moderator:manage:banned_users` (вход под аккаунтом бота), для канала `channel:manage:broadcast` (вход под своим). Потом импортируй каждый, команда спросит Access Token и Refresh Token и подскажет `TWITCH_CLIENT_ID`. Такие токены обновляются через их сервер.
+
+```bash
+.venv/Scripts/python -m sheri import-token bot
+```
+
+```bash
+.venv/Scripts/python -m sheri import-token broadcaster
+```
+
 4. Запусти бота:
 
 ```bash

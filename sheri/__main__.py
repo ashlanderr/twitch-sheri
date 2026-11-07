@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import getpass
 import logging
 import sys
 
@@ -12,7 +13,7 @@ from .llm import RouterAI
 from .memory import Memory
 from .tools import Tools
 from .twitch import TwitchChannel
-from .twitch_auth import TokenStore, device_login
+from .twitch_auth import TokenStore, device_login, import_token
 
 
 def build_agent(config: Config, channel) -> tuple[Agent, EventQueue]:
@@ -53,7 +54,7 @@ async def run_twitch(config: Config, voice: bool) -> None:
     tokens_dir = config.data_dir / "tokens"
     missing = [name for name in ("bot", "broadcaster") if not (tokens_dir / f"{name}.json").exists()]
     if missing:
-        sys.exit("Сначала выполни вход: " + ", ".join(f"python -m sheri login {name}" for name in missing))
+        sys.exit("Сначала выполни вход: " + ", ".join(f"python -m sheri login {name} (или import-token {name})" for name in missing))
     channel = TwitchChannel(
         config.twitch_client_id,
         TokenStore(tokens_dir / "bot.json", config.twitch_client_id),
@@ -78,6 +79,18 @@ def run_voice_client(config: Config, args: argparse.Namespace) -> None:
     asyncio.run(run_client(args.server, config.voice_token, device))
 
 
+def run_import_token(config: Config, account: str) -> None:
+    # getpass не показывает ввод, чтобы токены не остались на экране.
+    access_token = getpass.getpass("Access Token: ").strip()
+    refresh_token = getpass.getpass("Refresh Token: ").strip()
+    try:
+        client_id = asyncio.run(import_token(account, access_token, refresh_token, config.data_dir / "tokens"))
+    except RuntimeError as error:
+        sys.exit(str(error))
+    if client_id != config.twitch_client_id:
+        print(f"Укажи в .env: TWITCH_CLIENT_ID={client_id}")
+
+
 def main() -> None:
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
@@ -88,6 +101,8 @@ def main() -> None:
         command.add_argument("--voice", action="store_true", help="включить сервер распознавания голоса")
     login = commands.add_parser("login", help="вход в аккаунт Twitch")
     login.add_argument("account", choices=["bot", "broadcaster"])
+    imported = commands.add_parser("import-token", help="токены с twitchtokengenerator.com")
+    imported.add_argument("account", choices=["bot", "broadcaster"])
     client = commands.add_parser("voice-client", help="снимать микрофон и отправлять на сервер голоса")
     client.add_argument("--server", default="ws://127.0.0.1:8765", help="адрес сервера голоса")
     client.add_argument("--device", help="номер или имя микрофона")
@@ -103,6 +118,8 @@ def main() -> None:
         asyncio.run(run_twitch(config, args.voice))
     elif args.command == "voice-client":
         run_voice_client(config, args)
+    elif args.command == "import-token":
+        run_import_token(config, args.account)
     else:
         if not config.twitch_client_id:
             sys.exit("Укажи TWITCH_CLIENT_ID в файле .env")
