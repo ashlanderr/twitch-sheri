@@ -62,7 +62,7 @@
 
 В `.env` на обеих машинах нужен одинаковый `VOICE_TOKEN`, любая длинная случайная строка.
 
-Серверу нужны torch и GigaAM, около 3 ГБ. При первом запуске он скачает веса модели, ещё около 430 МБ:
+Серверу нужны torch и GigaAM, около 3 ГБ. При первом запуске он скачает веса модели с Hugging Face в `models/gigaam/`, ещё около 430 МБ:
 
 ```bash
 .venv/Scripts/python -m pip install -r requirements-server.txt
