@@ -34,6 +34,8 @@ class Config:
     voice_context_seconds: float = 90.0
     voice_followup_seconds: float = 20.0
     stt_model: str = "v3_e2e_rnnt"
+    # Последний снимок экрана столько живёт в истории, примерно как кэш токенов.
+    screenshot_ttl_seconds: float = 300.0
     # Снимки экрана: пароль WebSocket-сервера OBS на стрим-компе.
     obs_password: str = ""
 

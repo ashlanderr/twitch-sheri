@@ -1,6 +1,8 @@
 import json
 import logging
 import os
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -17,9 +19,9 @@ COMPACTION_NOTICE = (
 )
 
 
-SCREENSHOT_CAPTION = "Снимок экрана стрима от look_at_screen:"
-# Картинка живёт в истории только до конца хода: иначе каждая весила бы
-# пару тысяч токенов в каждом следующем запросе и раздувала history.json.
+SCREENSHOT_CAPTION = "Снимок экрана стрима от look_at_screen, сделан в {time}:"
+# В истории живёт только последний снимок и недолго: каждый запрос с ним
+# стоит пару тысяч токенов, пусть и из кэша. В history.json он не попадает.
 SCREENSHOT_GONE = "[здесь был снимок экрана стрима, картинка уже удалена]"
 
 
@@ -47,6 +49,9 @@ class Agent:
         # обновлять на каждый ход, иначе кэш токенов будет сбрасываться.
         self.system_prompt = self._build_system_prompt()
         self.last_prompt_tokens = 0
+        # Когда сделан снимок, который сейчас лежит в истории.
+        self.screenshot_taken: float | None = None
+        self.clock = time.monotonic
 
     def _build_system_prompt(self) -> str:
         return build_system_prompt(self.config.prompts_dir, self.memory)
@@ -59,7 +64,11 @@ class Agent:
     def _save_history(self) -> None:
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.history_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(self.history, ensure_ascii=False), encoding="utf-8")
+        saved = [
+            {**message, "content": SCREENSHOT_GONE} if _is_screenshot(message) else message
+            for message in self.history
+        ]
+        temporary.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
         os.replace(temporary, self.history_path)
 
     async def run(self, queue: EventQueue) -> None:
@@ -84,7 +93,13 @@ class Agent:
             await self._compact()
 
     async def _turn(self, content: str, ctx: TurnContext) -> None:
-        start = len(self.history)
+        if (
+            self.screenshot_taken is not None
+            and self.clock() - self.screenshot_taken > self.config.screenshot_ttl_seconds
+        ):
+            # Удаление сбрасывает кэш с места картинки, но через 5 минут
+            # кэш обычно уже истёк сам.
+            self._drop_screenshot()
         self.history.append({"role": "user", "content": content})
         done: set[tuple[str, str]] = set()
         try:
@@ -114,17 +129,23 @@ class Agent:
                 if images:
                     # В ответе инструмента картинку роутер молча выбрасывает,
                     # модель видит её только в сообщении пользователя.
+                    self._drop_screenshot()
+                    caption = SCREENSHOT_CAPTION.format(time=datetime.now().strftime("%H:%M:%S"))
                     self.history.append({"role": "user", "content": [
-                        {"type": "text", "text": SCREENSHOT_CAPTION},
-                        *({"type": "image_url", "image_url": {"url": image}} for image in images),
+                        {"type": "text", "text": caption},
+                        {"type": "image_url", "image_url": {"url": images[-1]}},
                     ]})
+                    self.screenshot_taken = self.clock()
                 if finished:
                     break
         finally:
-            for message in self.history[start:]:
-                if isinstance(message.get("content"), list):
-                    message["content"] = SCREENSHOT_GONE
             self._save_history()
+
+    def _drop_screenshot(self) -> None:
+        for message in self.history:
+            if _is_screenshot(message):
+                message["content"] = SCREENSHOT_GONE
+        self.screenshot_taken = None
 
     async def _compact(self) -> None:
         log.info("История дошла до %s токенов, обрезаю", self.last_prompt_tokens)
@@ -133,6 +154,8 @@ class Agent:
             await self._turn(COMPACTION_NOTICE, ctx)
         except Exception:
             log.exception("Не удалось сохранить память перед обрезкой")
+        # Обрезка всё равно сбрасывает кэш, а base64 картинки исказил бы её подсчёт размеров.
+        self._drop_screenshot()
         self._trim()
         self.system_prompt = self._build_system_prompt()
         self.last_prompt_tokens = 0
@@ -153,3 +176,7 @@ class Agent:
                 cut = index
         if cut:
             del self.history[:cut]
+
+
+def _is_screenshot(message: dict) -> bool:
+    return message["role"] == "user" and isinstance(message.get("content"), list)
