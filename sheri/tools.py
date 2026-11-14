@@ -172,7 +172,7 @@ class Tools:
 
     async def _look_at_screen(self, args: dict, ctx: TurnContext) -> ToolResult:
         if self.screen is None:
-            raise ToolError("экран не подключён: бот запущен без голоса и клиента на стрим-компе")
+            raise ToolError("экран не подключён: бот запущен без --stream-pc")
         return ToolResult("снимок экрана в следующем сообщении", image=await self.screen.capture())
 
     async def _timeout_user(self, args: dict, ctx: TurnContext) -> str:

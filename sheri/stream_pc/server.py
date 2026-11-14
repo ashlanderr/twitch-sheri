@@ -70,7 +70,7 @@ class StreamScreen:
             future.set_result(reply)
 
 
-async def serve_voice(
+async def serve_stream_pc(
     host: str,
     port: int,
     token: str,
@@ -78,40 +78,59 @@ async def serve_voice(
     on_text: Callable[[str], None],
     screen: StreamScreen | None = None,
 ) -> None:
-    """Принимает фразы от клиента: одно бинарное сообщение = одна фраза,
-    16 кГц, моно, int16. Распознанный текст отдаёт в on_text. Текстовые
-    сообщения клиента — ответы на запросы снимков экрана."""
+    """Связь с клиентом на стрим-компе. Бинарное сообщение — одна фраза с
+    микрофона, 16 кГц, моно, int16: распознанный текст уходит в on_text.
+    Текстовые сообщения — ответы на запросы снимков экрана."""
     screen = screen or StreamScreen()
     if not token:
-        raise RuntimeError("Укажи VOICE_TOKEN в .env: без него голос может прислать кто угодно в сети")
+        raise RuntimeError(
+            "Укажи STREAM_PC_TOKEN в .env: без него голос и снимки может прислать кто угодно в сети"
+        )
     # Модель на видеокарте обрабатывает фразы по одной.
     lock = asyncio.Lock()
 
     async def handle(connection: ServerConnection) -> None:
         given = connection.request.headers.get("Authorization", "")
         if not hmac.compare_digest(given, f"Bearer {token}"):
-            log.warning("Голосовой клиент %s с неверным токеном", connection.remote_address)
+            log.warning("Стрим-комп %s с неверным токеном", connection.remote_address)
             await connection.close(4001, "bad token")
             return
-        log.info("Голосовой клиент подключился: %s", connection.remote_address)
+        log.info("Стрим-комп подключился: %s", connection.remote_address)
+        # Распознавание идёт отдельно от чтения, чтобы ответ со снимком
+        # не ждал, пока модель дослушает фразу. Порядок фраз сохраняется.
+        phrases: asyncio.Queue[np.ndarray] = asyncio.Queue()
+
+        async def transcribe() -> None:
+            while True:
+                pcm = await phrases.get()
+                try:
+                    async with lock:
+                        text = await asyncio.to_thread(transcriber.transcribe, pcm)
+                    log.info("Голос (%.1f с): %s", len(pcm) / 16_000, text)
+                    on_text(text)
+                except Exception:
+                    log.exception("Не удалось распознать фразу")
+                finally:
+                    phrases.task_done()
+
+        worker = asyncio.create_task(transcribe())
         screen.attach(connection)
         try:
             async for message in connection:
                 if isinstance(message, str):
                     screen.receive(message)
-                    continue
-                pcm = np.frombuffer(message, dtype=np.int16)
-                async with lock:
-                    text = await asyncio.to_thread(transcriber.transcribe, pcm)
-                log.info("Голос (%.1f с): %s", len(pcm) / 16_000, text)
-                on_text(text)
+                else:
+                    phrases.put_nowait(np.frombuffer(message, dtype=np.int16))
         except ConnectionClosedError:
             # Клиент закрылся без прощания: выключили комп или оборвалась сеть.
             pass
         finally:
             screen.detach(connection)
-        log.info("Голосовой клиент отключился: %s", connection.remote_address)
+            # Уже принятые фразы дослушиваем, потом останавливаемся.
+            await phrases.join()
+            worker.cancel()
+        log.info("Стрим-комп отключился: %s", connection.remote_address)
 
     async with serve(handle, host, port, max_size=MAX_MESSAGE_BYTES) as server:
-        log.info("Сервер голоса слушает %s:%s", host, port)
+        log.info("Жду стрим-комп на %s:%s", host, port)
         await server.serve_forever()

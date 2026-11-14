@@ -1,5 +1,5 @@
-"""Клиент для стрим-компа: снимает микрофон, вырезает фразы и отправляет их на сервер.
-По запросу сервера присылает снимок стрима из OBS.
+"""Клиент для стрим-компа: снимает микрофон, вырезает фразы и отправляет их боту,
+а по его запросу присылает снимок стрима из OBS.
 Тяжёлого здесь ничего нет: VAD маленький и работает на процессоре."""
 
 import asyncio
@@ -10,9 +10,9 @@ import numpy as np
 import sounddevice as sd
 import websockets
 
+from ..voice.segmenter import FRAME, SAMPLE_RATE, Segmenter
+from ..voice.vad import SileroVAD
 from .obs import OBS, OBSError
-from .segmenter import FRAME, SAMPLE_RATE, Segmenter
-from .vad import SileroVAD
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ async def run_client(url: str, token: str, device: int | str | None, obs: OBS | 
             if connected.is_set():
                 segments.put_nowait(segment)
             else:
-                log.warning("Сервер недоступен, фраза %.1f с потеряна", len(segment) / SAMPLE_RATE)
+                log.warning("Бот недоступен, фраза %.1f с потеряна", len(segment) / SAMPLE_RATE)
 
     async def send_phrases(socket) -> None:
         while True:
@@ -73,7 +73,7 @@ async def run_client(url: str, token: str, device: int | str | None, obs: OBS | 
         while True:
             try:
                 async with websockets.connect(url, additional_headers=headers) as socket:
-                    log.info("Подключён к серверу голоса %s", url)
+                    log.info("Подключён к боту %s", url)
                     connected.set()
                     sender = asyncio.create_task(send_phrases(socket))
                     try:
@@ -82,7 +82,7 @@ async def run_client(url: str, token: str, device: int | str | None, obs: OBS | 
                     finally:
                         sender.cancel()
             except (websockets.WebSocketException, OSError) as error:
-                log.warning("Нет связи с сервером голоса: %s", error)
+                log.warning("Нет связи с ботом: %s", error)
             connected.clear()
             await asyncio.sleep(RECONNECT_DELAY_SECONDS)
 

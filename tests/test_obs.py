@@ -6,7 +6,7 @@ import json
 import pytest
 from websockets.asyncio.server import serve
 
-from sheri.voice.obs import OBS, OBSError, _auth
+from sheri.stream_pc.obs import OBS, OBSError, _auth
 
 PORTS = itertools.count(19455)
 

@@ -34,7 +34,7 @@ def build_system_prompt(prompts_dir: Path, memory: Memory) -> str:
 
 
 class Agent:
-    """Одна общая история на все источники: чат, консоль, а потом голос и донаты."""
+    """Одна общая история на все источники: чат, консоль, голос, а потом донаты."""
 
     def __init__(self, llm: LLM, tools: Tools, memory: Memory, config: Config):
         self.llm = llm

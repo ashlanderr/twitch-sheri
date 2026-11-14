@@ -2,13 +2,14 @@ import asyncio
 import contextlib
 import itertools
 import json
+import time
 
 import numpy as np
 import pytest
 import websockets
 
 from sheri.tools import ToolError
-from sheri.voice.server import StreamScreen, serve_voice
+from sheri.stream_pc.server import StreamScreen, serve_stream_pc
 
 PORTS = itertools.count(18765)
 
@@ -26,7 +27,7 @@ class FakeTranscriber:
 async def running_server(token="secret"):
     port = next(PORTS)
     heard, transcriber = [], FakeTranscriber()
-    server = asyncio.create_task(serve_voice("127.0.0.1", port, token, transcriber, heard.append))
+    server = asyncio.create_task(serve_stream_pc("127.0.0.1", port, token, transcriber, heard.append))
     try:
         async with asyncio.timeout(5):
             while True:
@@ -82,15 +83,15 @@ async def test_abrupt_disconnect_keeps_server_running(caplog):
 
 
 async def test_server_refuses_to_start_without_token():
-    with pytest.raises(RuntimeError, match="VOICE_TOKEN"):
-        await serve_voice("127.0.0.1", next(PORTS), "", FakeTranscriber(), print)
+    with pytest.raises(RuntimeError, match="STREAM_PC_TOKEN"):
+        await serve_stream_pc("127.0.0.1", next(PORTS), "", FakeTranscriber(), print)
 
 
 async def test_screenshot_round_trip_through_client():
     port = next(PORTS)
     screen = StreamScreen()
     server = asyncio.create_task(
-        serve_voice("127.0.0.1", port, "secret", FakeTranscriber(), print, screen)
+        serve_stream_pc("127.0.0.1", port, "secret", FakeTranscriber(), print, screen)
     )
     try:
         async with asyncio.timeout(10):
@@ -120,6 +121,48 @@ async def test_screenshot_round_trip_through_client():
             await asyncio.sleep(0.1)
             with pytest.raises(ToolError, match="не подключён"):
                 await screen.capture()
+    finally:
+        server.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await server
+
+
+async def test_screenshot_does_not_wait_for_slow_transcription():
+    class SlowTranscriber(FakeTranscriber):
+        def transcribe(self, pcm):
+            time.sleep(1.5)
+            return super().transcribe(pcm)
+
+    port, screen, heard = next(PORTS), StreamScreen(), []
+    server = asyncio.create_task(
+        serve_stream_pc("127.0.0.1", port, "secret", SlowTranscriber(), heard.append, screen)
+    )
+    try:
+        async with asyncio.timeout(10):
+            while True:
+                try:
+                    socket = await websockets.connect(
+                        f"ws://127.0.0.1:{port}", additional_headers={"Authorization": "Bearer secret"}
+                    )
+                    break
+                except OSError:
+                    await asyncio.sleep(0.05)
+            await socket.send(np.zeros(1_600, dtype=np.int16).tobytes())
+            await asyncio.sleep(0.1)
+
+            async def client():
+                request = json.loads(await socket.recv())
+                await socket.send(json.dumps({"type": "screenshot", "id": request["id"], "image": "x"}))
+
+            answering = asyncio.create_task(client())
+            started = time.monotonic()
+            assert await screen.capture() == "x"
+            assert time.monotonic() - started < 1.0
+            await answering
+            # Отключение посреди распознавания не теряет фразу.
+            await socket.close()
+            while not heard:
+                await asyncio.sleep(0.05)
     finally:
         server.cancel()
         with contextlib.suppress(asyncio.CancelledError):

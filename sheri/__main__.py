@@ -24,35 +24,36 @@ def build_agent(config: Config, channel, screen=None) -> tuple[Agent, EventQueue
     return agent, EventQueue(config.debounce_seconds, config.batch_max_wait_seconds, config.max_batch)
 
 
-async def run_voice_server(config: Config, queue: EventQueue, screen) -> None:
-    # Тяжёлые импорты только тут: клиенту и чату torch не нужен.
-    from .voice.server import serve_voice
+async def serve_stream_pc(config: Config, queue: EventQueue, screen) -> None:
+    # Тяжёлые импорты только тут: стрим-компу и чату torch не нужен.
+    from .stream_pc.server import serve_stream_pc as serve
     from .voice.stt import GigaAMTranscriber
 
     hearing = Hearing(
         queue, config.voice_speaker, config.voice_context_seconds, config.voice_followup_seconds
     )
     transcriber = await asyncio.to_thread(GigaAMTranscriber, config.stt_model)
-    await serve_voice(
-        config.voice_host, config.voice_port, config.voice_token, transcriber, hearing.hear, screen
+    await serve(
+        config.stream_pc_host, config.stream_pc_port, config.stream_pc_token,
+        transcriber, hearing.hear, screen,
     )
 
 
-def make_screen(voice: bool):
-    """Экран видно через тот же клиент на стрим-компе, что снимает микрофон."""
-    if not voice:
+def make_screen(stream_pc: bool):
+    """Экран Шери видит только через стрим-комп."""
+    if not stream_pc:
         return None
-    from .voice.server import StreamScreen
+    from .stream_pc.server import StreamScreen
 
     return StreamScreen()
 
 
-async def run_console(config: Config, voice: bool) -> None:
-    screen = make_screen(voice)
+async def run_console(config: Config, stream_pc: bool) -> None:
+    screen = make_screen(stream_pc)
     agent, queue = build_agent(config, ConsoleChannel(), screen)
     workers = [asyncio.create_task(agent.run(queue))]
-    if voice:
-        workers.append(asyncio.create_task(run_voice_server(config, queue, screen)))
+    if stream_pc:
+        workers.append(asyncio.create_task(serve_stream_pc(config, queue, screen)))
     try:
         await read_console(queue)
     finally:
@@ -60,7 +61,7 @@ async def run_console(config: Config, voice: bool) -> None:
             worker.cancel()
 
 
-async def run_twitch(config: Config, voice: bool) -> None:
+async def run_twitch(config: Config, stream_pc: bool) -> None:
     if not config.twitch_client_id:
         sys.exit("Укажи TWITCH_CLIENT_ID в файле .env")
     tokens_dir = config.data_dir / "tokens"
@@ -72,26 +73,26 @@ async def run_twitch(config: Config, voice: bool) -> None:
         TokenStore(tokens_dir / "bot.json", config.twitch_client_id),
         TokenStore(tokens_dir / "broadcaster.json", config.twitch_client_id),
     )
-    screen = make_screen(voice)
+    screen = make_screen(stream_pc)
     agent, queue = build_agent(config, channel, screen)
     tasks = [agent.run(queue), channel.read_chat(queue)]
-    if voice:
-        tasks.append(run_voice_server(config, queue, screen))
+    if stream_pc:
+        tasks.append(serve_stream_pc(config, queue, screen))
     await asyncio.gather(*tasks)
 
 
-def run_voice_client(config: Config, args: argparse.Namespace) -> None:
-    from .voice.client import list_devices, run_client
-    from .voice.obs import OBS
+def run_stream_pc(config: Config, args: argparse.Namespace) -> None:
+    from .stream_pc.client import list_devices, run_client
+    from .stream_pc.obs import OBS
 
     if args.list_devices:
         list_devices()
         return
-    if not config.voice_token:
-        sys.exit("Укажи в .env тот же VOICE_TOKEN, что и на сервере")
+    if not config.stream_pc_token:
+        sys.exit("Укажи в .env тот же STREAM_PC_TOKEN, что и у бота")
     device = int(args.device) if args.device and args.device.isdigit() else args.device
     obs = None if args.no_screen else OBS(args.obs, config.obs_password, args.screen_width)
-    asyncio.run(run_client(args.server, config.voice_token, device, obs))
+    asyncio.run(run_client(args.bot, config.stream_pc_token, device, obs))
 
 
 def run_import_token(config: Config, account: str) -> None:
@@ -113,13 +114,18 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     for name, text in (("console", "проверка без Twitch"), ("twitch", "работа в чате Twitch")):
         command = commands.add_parser(name, help=text)
-        command.add_argument("--voice", action="store_true", help="включить сервер распознавания голоса")
+        command.add_argument(
+            "--stream-pc", action="store_true",
+            help="ждать подключения стрим-компа: голос Любы и снимки экрана",
+        )
     login = commands.add_parser("login", help="вход в аккаунт Twitch")
     login.add_argument("account", choices=["bot", "broadcaster"])
     imported = commands.add_parser("import-token", help="токены с twitchtokengenerator.com")
     imported.add_argument("account", choices=["bot", "broadcaster"])
-    client = commands.add_parser("voice-client", help="снимать микрофон и отправлять на сервер голоса")
-    client.add_argument("--server", default="ws://127.0.0.1:8765", help="адрес сервера голоса")
+    client = commands.add_parser(
+        "stream-pc", help="запускать на стрим-компе: отдаёт боту микрофон и снимки экрана"
+    )
+    client.add_argument("--bot", default="ws://127.0.0.1:8765", help="адрес компа, где запущен бот")
     client.add_argument("--device", help="номер или имя микрофона")
     client.add_argument("--list-devices", action="store_true", help="показать микрофоны")
     client.add_argument("--obs", default="ws://127.0.0.1:4455", help="адрес WebSocket-сервера OBS")
@@ -131,11 +137,11 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     config = load_config()
     if args.command == "console":
-        asyncio.run(run_console(config, args.voice))
+        asyncio.run(run_console(config, args.stream_pc))
     elif args.command == "twitch":
-        asyncio.run(run_twitch(config, args.voice))
-    elif args.command == "voice-client":
-        run_voice_client(config, args)
+        asyncio.run(run_twitch(config, args.stream_pc))
+    elif args.command == "stream-pc":
+        run_stream_pc(config, args)
     elif args.command == "import-token":
         run_import_token(config, args.account)
     else:
