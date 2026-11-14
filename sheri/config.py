@@ -11,8 +11,8 @@ ROOT = Path(__file__).resolve().parent.parent
 class Config:
     api_key: str = ""
     base_url: str = "https://routerai.ru/api/v1"
-    model: str = "openai/gpt-6-luna"
-    reasoning_effort: str = "low"
+    model: str = "openai/gpt-6.1-terra"
+    reasoning_effort: str = "medium"
     max_completion_tokens: int = 1000
     # При достижении high история одним шагом обрезается примерно до low.
     # Обрезать по чуть-чуть нельзя: каждый сдвиг начала истории сбрасывает кэш.

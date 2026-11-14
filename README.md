@@ -24,6 +24,18 @@
 .venv/Scripts/python scripts/live_check.py
 ```
 
+Проверка характера на коротких сценах, каждая с чистой историей. Реплики в сценах не должны зависеть от конкретного ответа Шери, иначе контекст ломается. `heldout.json` — сцены, под которые промпт не подгонялся:
+
+```bash
+.venv/Scripts/python scripts/eval_scenes.py evals/scenes.json --memory evals/memory
+```
+
+Прогон записи чата (JSON-список `{"t", "user", "text"}`): ответы прежнего бота выкидываются, Шери отвечает заново. Реплики людей там отвечают на старые ответы, так что годится только для грубой оценки:
+
+```bash
+.venv/Scripts/python scripts/replay_chat.py chat.json --from 0 --to 20 --memory evals/memory
+```
+
 ## Подключение к Twitch
 
 1. Создай отдельный аккаунт Twitch для бота и сделай его модератором канала: `/mod <ник_бота>`.
