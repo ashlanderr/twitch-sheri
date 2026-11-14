@@ -1,6 +1,6 @@
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Awaitable, Callable, Protocol
 
 from .events import Role
@@ -21,6 +21,12 @@ class Channel(Protocol):
     async def get_channel(self) -> str: ...
 
 
+class Screen(Protocol):
+    async def capture(self) -> str:
+        """Снимок того, что видят зрители, как data URL картинки."""
+        ...
+
+
 class ToolError(Exception):
     pass
 
@@ -37,6 +43,8 @@ class TurnContext:
 class ToolResult:
     text: str
     ends_turn: bool = False
+    # data URL картинки: агент покажет её модели отдельным сообщением.
+    image: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,7 +53,7 @@ class Tool:
     description: str
     parameters: dict
     min_role: Role
-    handler: Callable[[dict, TurnContext], Awaitable[str]]
+    handler: Callable[[dict, TurnContext], Awaitable[str | ToolResult]]
     # Успешный вызов завершает ход без лишнего запроса к модели.
     ends_turn: bool = False
 
@@ -60,9 +68,10 @@ def _schema(optional: tuple[str, ...] = (), **properties: str) -> dict:
 
 
 class Tools:
-    def __init__(self, channel: Channel, memory: Memory):
+    def __init__(self, channel: Channel, memory: Memory, screen: Screen | None = None):
         self.channel = channel
         self.memory = memory
+        self.screen = screen
         self._tools = {tool.name: tool for tool in self._build()}
         # Список не меняется в течение жизни бота: его смена сбросила бы кэш токенов.
         self.schemas = [
@@ -96,6 +105,10 @@ class Tools:
                  _schema(name="Имя заметки"), Role.MODERATOR, self._memory_delete),
             Tool("get_channel", "Узнать текущее название стрима и игру.",
                  _schema(), Role.VIEWER, self._get_channel),
+            Tool("look_at_screen",
+                 "Посмотреть на стрим: снимок того, что сейчас видят зрители. Картинка придёт "
+                 "следующим сообщением и после хода исчезнет из истории.",
+                 _schema(), Role.VIEWER, self._look_at_screen),
             Tool("timeout_user", "Выдать зрителю таймаут.",
                  _schema(login="Ник зрителя", seconds="Длительность в секундах, числом",
                          reason="Причина"), Role.MODERATOR, self._timeout_user),
@@ -117,14 +130,16 @@ class Tools:
                 f"а у {ctx.actor} уровень {ctx.role.name.lower()}"
             )
         try:
-            text = await tool.handler(json.loads(raw_args or "{}"), ctx)
+            result = await tool.handler(json.loads(raw_args or "{}"), ctx)
         except (ToolError, MemoryError) as error:
             return ToolResult(f"ошибка: {error}")
         except Exception as error:
             log.exception("Инструмент %s упал", name)
             return ToolResult(f"ошибка: {type(error).__name__}: {error}")
-        log.info("%s(%s) от %s: %s", name, raw_args, ctx.actor, text)
-        return ToolResult(text, tool.ends_turn)
+        if isinstance(result, str):
+            result = ToolResult(result)
+        log.info("%s(%s) от %s: %s", name, raw_args, ctx.actor, result.text)
+        return replace(result, ends_turn=tool.ends_turn)
 
     async def _say(self, args: dict, ctx: TurnContext) -> str:
         text = args["text"].strip()
@@ -154,6 +169,11 @@ class Tools:
 
     async def _get_channel(self, args: dict, ctx: TurnContext) -> str:
         return await self.channel.get_channel()
+
+    async def _look_at_screen(self, args: dict, ctx: TurnContext) -> ToolResult:
+        if self.screen is None:
+            raise ToolError("экран не подключён: бот запущен без голоса и клиента на стрим-компе")
+        return ToolResult("снимок экрана в следующем сообщении", image=await self.screen.capture())
 
     async def _timeout_user(self, args: dict, ctx: TurnContext) -> str:
         seconds = int(args["seconds"])

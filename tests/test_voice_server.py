@@ -1,12 +1,14 @@
 import asyncio
 import contextlib
 import itertools
+import json
 
 import numpy as np
 import pytest
 import websockets
 
-from sheri.voice.server import serve_voice
+from sheri.tools import ToolError
+from sheri.voice.server import StreamScreen, serve_voice
 
 PORTS = itertools.count(18765)
 
@@ -82,3 +84,43 @@ async def test_abrupt_disconnect_keeps_server_running(caplog):
 async def test_server_refuses_to_start_without_token():
     with pytest.raises(RuntimeError, match="VOICE_TOKEN"):
         await serve_voice("127.0.0.1", next(PORTS), "", FakeTranscriber(), print)
+
+
+async def test_screenshot_round_trip_through_client():
+    port = next(PORTS)
+    screen = StreamScreen()
+    server = asyncio.create_task(
+        serve_voice("127.0.0.1", port, "secret", FakeTranscriber(), print, screen)
+    )
+    try:
+        async with asyncio.timeout(10):
+            with pytest.raises(ToolError, match="не подключён"):
+                await screen.capture()
+            while True:
+                try:
+                    socket = await websockets.connect(
+                        f"ws://127.0.0.1:{port}", additional_headers={"Authorization": "Bearer secret"}
+                    )
+                    break
+                except OSError:
+                    await asyncio.sleep(0.05)
+
+            async def client():
+                for answer in ({"image": "data:image/jpeg;base64,QQ=="}, {"error": "OBS выключен"}):
+                    request = json.loads(await socket.recv())
+                    assert request["type"] == "screenshot"
+                    await socket.send(json.dumps({"type": "screenshot", "id": request["id"], **answer}))
+
+            answering = asyncio.create_task(client())
+            assert await screen.capture() == "data:image/jpeg;base64,QQ=="
+            with pytest.raises(ToolError, match="OBS выключен"):
+                await screen.capture()
+            await answering
+            await socket.close()
+            await asyncio.sleep(0.1)
+            with pytest.raises(ToolError, match="не подключён"):
+                await screen.capture()
+    finally:
+        server.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await server

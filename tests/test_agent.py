@@ -331,3 +331,31 @@ async def test_failed_llm_keeps_event_in_history_and_loop_alive(config):
     assert channel.said == ["мяу"]
     contents = " ".join(m.get("content") or "" for m in llm.requests[0][0])
     assert "первое" in contents and "второе" in contents
+
+
+class FakeScreen:
+    async def capture(self):
+        return "data:image/jpeg;base64,AAAA"
+
+
+async def test_screenshot_is_shown_to_model_then_dropped_from_history(config):
+    channel, memory = FakeChannel(), Memory(config.data_dir / "memory")
+    llm = FakeLLM([call("look_at_screen"), call("say", "2", text="перк так себе")])
+    agent = Agent(llm, Tools(channel, memory, FakeScreen()), memory, config)
+    await agent.handle([viewer("шери, какой перк?")])
+    seen = llm.requests[1][0]
+    assert seen[-2]["role"] == "tool"
+    assert seen[-1]["role"] == "user"
+    assert seen[-1]["content"][1] == {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAAA"}}
+    assert channel.said == ["перк так себе"]
+    saved = (config.data_dir / "history.json").read_text(encoding="utf-8")
+    assert "base64" not in saved
+    assert "base64" not in json.dumps(agent.history)
+
+
+async def test_screenshot_without_client_is_an_error_for_model(config):
+    agent, llm, _, _ = make(config, [call("look_at_screen"), call("stay_silent", "2")])
+    await agent.handle([viewer("шери, что на экране?")])
+    tool_reply = llm.requests[1][0][-1]
+    assert tool_reply["role"] == "tool"
+    assert tool_reply["content"].startswith("ошибка: экран не подключён")

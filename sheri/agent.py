@@ -17,6 +17,12 @@ COMPACTION_NOTICE = (
 )
 
 
+SCREENSHOT_CAPTION = "Снимок экрана стрима от look_at_screen:"
+# Картинка живёт в истории только до конца хода: иначе каждая весила бы
+# пару тысяч токенов в каждом следующем запросе и раздувала history.json.
+SCREENSHOT_GONE = "[здесь был снимок экрана стрима, картинка уже удалена]"
+
+
 class LLM(Protocol):
     async def complete(self, messages: list[dict], tools: list[dict]) -> tuple[dict, int]: ...
 
@@ -78,6 +84,7 @@ class Agent:
             await self._compact()
 
     async def _turn(self, content: str, ctx: TurnContext) -> None:
+        start = len(self.history)
         self.history.append({"role": "user", "content": content})
         done: set[tuple[str, str]] = set()
         try:
@@ -89,6 +96,7 @@ class Agent:
                 if not calls:
                     break
                 finished = False
+                images: list[str] = []
                 for call in calls:
                     key = (call["function"]["name"], call["function"]["arguments"])
                     if key in done:
@@ -98,12 +106,24 @@ class Agent:
                         result = await self.tools.call(*key, ctx)
                         text = result.text
                         finished = finished or result.ends_turn
+                        if result.image:
+                            images.append(result.image)
                         if not text.startswith(("ошибка", "отказано")):
                             done.add(key)
                     self.history.append({"role": "tool", "tool_call_id": call["id"], "content": text})
+                if images:
+                    # В ответе инструмента картинку роутер молча выбрасывает,
+                    # модель видит её только в сообщении пользователя.
+                    self.history.append({"role": "user", "content": [
+                        {"type": "text", "text": SCREENSHOT_CAPTION},
+                        *({"type": "image_url", "image_url": {"url": image}} for image in images),
+                    ]})
                 if finished:
                     break
         finally:
+            for message in self.history[start:]:
+                if isinstance(message.get("content"), list):
+                    message["content"] = SCREENSHOT_GONE
             self._save_history()
 
     async def _compact(self) -> None:

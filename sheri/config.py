@@ -34,6 +34,8 @@ class Config:
     voice_context_seconds: float = 90.0
     voice_followup_seconds: float = 20.0
     stt_model: str = "v3_e2e_rnnt"
+    # Снимки экрана: пароль WebSocket-сервера OBS на стрим-компе.
+    obs_password: str = ""
 
 
 def load_config() -> Config:
@@ -46,4 +48,5 @@ def load_config() -> Config:
         voice_port=int(os.getenv("VOICE_PORT", Config.voice_port)),
         voice_token=os.getenv("VOICE_TOKEN", ""),
         stt_model=os.getenv("STT_MODEL", Config.stt_model),
+        obs_password=os.getenv("OBS_PASSWORD", ""),
     )

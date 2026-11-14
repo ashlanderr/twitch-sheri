@@ -1,13 +1,16 @@
 """Клиент для стрим-компа: снимает микрофон, вырезает фразы и отправляет их на сервер.
+По запросу сервера присылает снимок стрима из OBS.
 Тяжёлого здесь ничего нет: VAD маленький и работает на процессоре."""
 
 import asyncio
+import json
 import logging
 
 import numpy as np
 import sounddevice as sd
 import websockets
 
+from .obs import OBS, OBSError
 from .segmenter import FRAME, SAMPLE_RATE, Segmenter
 from .vad import SileroVAD
 
@@ -16,7 +19,21 @@ log = logging.getLogger(__name__)
 RECONNECT_DELAY_SECONDS = 3
 
 
-async def run_client(url: str, token: str, device: int | str | None) -> None:
+async def answer_screenshot(socket, request: dict, obs: OBS | None) -> None:
+    reply = {"type": "screenshot", "id": request.get("id")}
+    if obs is None:
+        reply["error"] = "снимки экрана выключены на стрим-компе"
+    else:
+        try:
+            reply["image"] = await obs.screenshot()
+            log.info("Отправлен снимок экрана, %d КБ", len(reply["image"]) * 3 // 4 // 1024)
+        except OBSError as error:
+            log.warning("Снимок экрана: %s", error)
+            reply["error"] = str(error)
+    await socket.send(json.dumps(reply))
+
+
+async def run_client(url: str, token: str, device: int | str | None, obs: OBS | None = None) -> None:
     loop = asyncio.get_running_loop()
     frames: asyncio.Queue[np.ndarray] = asyncio.Queue()
     segments: asyncio.Queue[np.ndarray] = asyncio.Queue()
@@ -39,17 +56,31 @@ async def run_client(url: str, token: str, device: int | str | None) -> None:
             else:
                 log.warning("Сервер недоступен, фраза %.1f с потеряна", len(segment) / SAMPLE_RATE)
 
-    async def send_phrases() -> None:
+    async def send_phrases(socket) -> None:
+        while True:
+            segment = await segments.get()
+            await socket.send(segment.tobytes())
+            log.info("Отправлена фраза %.1f с", len(segment) / SAMPLE_RATE)
+
+    async def serve_requests(socket) -> None:
+        async for message in socket:
+            request = json.loads(message) if isinstance(message, str) else {}
+            if request.get("type") == "screenshot":
+                await answer_screenshot(socket, request, obs)
+
+    async def stay_connected() -> None:
         headers = {"Authorization": f"Bearer {token}"}
         while True:
             try:
                 async with websockets.connect(url, additional_headers=headers) as socket:
                     log.info("Подключён к серверу голоса %s", url)
                     connected.set()
-                    while True:
-                        segment = await segments.get()
-                        await socket.send(segment.tobytes())
-                        log.info("Отправлена фраза %.1f с", len(segment) / SAMPLE_RATE)
+                    sender = asyncio.create_task(send_phrases(socket))
+                    try:
+                        # Цикл чтения заканчивается, когда сервер закрыл соединение.
+                        await serve_requests(socket)
+                    finally:
+                        sender.cancel()
             except (websockets.WebSocketException, OSError) as error:
                 log.warning("Нет связи с сервером голоса: %s", error)
             connected.clear()
@@ -60,7 +91,7 @@ async def run_client(url: str, token: str, device: int | str | None) -> None:
         device=device, callback=on_audio,
     ):
         log.info("Слушаю микрофон: %s", sd.query_devices(device, "input")["name"])
-        await asyncio.gather(cut_phrases(), send_phrases())
+        await asyncio.gather(cut_phrases(), stay_connected())
 
 
 def list_devices() -> None:

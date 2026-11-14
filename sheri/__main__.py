@@ -16,15 +16,15 @@ from .twitch import TwitchChannel
 from .twitch_auth import TokenStore, device_login, import_token
 
 
-def build_agent(config: Config, channel) -> tuple[Agent, EventQueue]:
+def build_agent(config: Config, channel, screen=None) -> tuple[Agent, EventQueue]:
     if not config.api_key:
         sys.exit("Укажи ROUTERAI_API_KEY в файле .env")
     memory = Memory(config.data_dir / "memory")
-    agent = Agent(RouterAI(config), Tools(channel, memory), memory, config)
+    agent = Agent(RouterAI(config), Tools(channel, memory, screen), memory, config)
     return agent, EventQueue(config.debounce_seconds, config.batch_max_wait_seconds, config.max_batch)
 
 
-async def run_voice_server(config: Config, queue: EventQueue) -> None:
+async def run_voice_server(config: Config, queue: EventQueue, screen) -> None:
     # Тяжёлые импорты только тут: клиенту и чату torch не нужен.
     from .voice.server import serve_voice
     from .voice.stt import GigaAMTranscriber
@@ -33,14 +33,26 @@ async def run_voice_server(config: Config, queue: EventQueue) -> None:
         queue, config.voice_speaker, config.voice_context_seconds, config.voice_followup_seconds
     )
     transcriber = await asyncio.to_thread(GigaAMTranscriber, config.stt_model)
-    await serve_voice(config.voice_host, config.voice_port, config.voice_token, transcriber, hearing.hear)
+    await serve_voice(
+        config.voice_host, config.voice_port, config.voice_token, transcriber, hearing.hear, screen
+    )
+
+
+def make_screen(voice: bool):
+    """Экран видно через тот же клиент на стрим-компе, что снимает микрофон."""
+    if not voice:
+        return None
+    from .voice.server import StreamScreen
+
+    return StreamScreen()
 
 
 async def run_console(config: Config, voice: bool) -> None:
-    agent, queue = build_agent(config, ConsoleChannel())
+    screen = make_screen(voice)
+    agent, queue = build_agent(config, ConsoleChannel(), screen)
     workers = [asyncio.create_task(agent.run(queue))]
     if voice:
-        workers.append(asyncio.create_task(run_voice_server(config, queue)))
+        workers.append(asyncio.create_task(run_voice_server(config, queue, screen)))
     try:
         await read_console(queue)
     finally:
@@ -60,15 +72,17 @@ async def run_twitch(config: Config, voice: bool) -> None:
         TokenStore(tokens_dir / "bot.json", config.twitch_client_id),
         TokenStore(tokens_dir / "broadcaster.json", config.twitch_client_id),
     )
-    agent, queue = build_agent(config, channel)
+    screen = make_screen(voice)
+    agent, queue = build_agent(config, channel, screen)
     tasks = [agent.run(queue), channel.read_chat(queue)]
     if voice:
-        tasks.append(run_voice_server(config, queue))
+        tasks.append(run_voice_server(config, queue, screen))
     await asyncio.gather(*tasks)
 
 
 def run_voice_client(config: Config, args: argparse.Namespace) -> None:
     from .voice.client import list_devices, run_client
+    from .voice.obs import OBS
 
     if args.list_devices:
         list_devices()
@@ -76,7 +90,8 @@ def run_voice_client(config: Config, args: argparse.Namespace) -> None:
     if not config.voice_token:
         sys.exit("Укажи в .env тот же VOICE_TOKEN, что и на сервере")
     device = int(args.device) if args.device and args.device.isdigit() else args.device
-    asyncio.run(run_client(args.server, config.voice_token, device))
+    obs = None if args.no_screen else OBS(args.obs, config.obs_password, args.screen_width)
+    asyncio.run(run_client(args.server, config.voice_token, device, obs))
 
 
 def run_import_token(config: Config, account: str) -> None:
@@ -107,6 +122,9 @@ def main() -> None:
     client.add_argument("--server", default="ws://127.0.0.1:8765", help="адрес сервера голоса")
     client.add_argument("--device", help="номер или имя микрофона")
     client.add_argument("--list-devices", action="store_true", help="показать микрофоны")
+    client.add_argument("--obs", default="ws://127.0.0.1:4455", help="адрес WebSocket-сервера OBS")
+    client.add_argument("--screen-width", type=int, default=1920, help="ширина снимка экрана")
+    client.add_argument("--no-screen", action="store_true", help="не давать Шери смотреть на экран")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
