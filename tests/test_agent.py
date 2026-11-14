@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from sheri.agent import Agent
+from sheri.agent import SCREENSHOT_GONE, Agent
 from sheri.config import ROOT, Config
 from sheri.events import Event, EventQueue, Role
 from sheri.memory import Memory
@@ -331,3 +331,94 @@ async def test_failed_llm_keeps_event_in_history_and_loop_alive(config):
     assert channel.said == ["мяу"]
     contents = " ".join(m.get("content") or "" for m in llm.requests[0][0])
     assert "первое" in contents and "второе" in contents
+
+
+class CountingScreen:
+    def __init__(self):
+        self.taken = 0
+
+    async def capture(self):
+        self.taken += 1
+        return f"data:image/jpeg;base64,SHOT{self.taken}"
+
+
+def make_with_screen(config, replies):
+    channel, memory = FakeChannel(), Memory(config.data_dir / "memory")
+    llm = FakeLLM(replies)
+    agent = Agent(llm, Tools(channel, memory, CountingScreen()), memory, config)
+    now = [1000.0]
+    agent.clock = lambda: now[0]
+    return agent, llm, channel, now
+
+
+def images_in(messages):
+    return [part["image_url"]["url"] for message in messages if isinstance(message.get("content"), list)
+            for part in message["content"] if part["type"] == "image_url"]
+
+
+async def test_screenshot_is_shown_to_model_after_tool_reply(config):
+    agent, llm, channel, _ = make_with_screen(
+        config, [call("look_at_screen"), call("say", "2", text="перк так себе")]
+    )
+    await agent.handle([viewer("шери, какой перк?")])
+    seen = llm.requests[1][0]
+    assert seen[-2]["role"] == "tool"
+    assert seen[-1]["role"] == "user"
+    assert seen[-1]["content"][0]["text"].startswith("Снимок экрана стрима от look_at_screen, сделан в ")
+    assert images_in(seen) == ["data:image/jpeg;base64,SHOT1"]
+    assert channel.said == ["перк так себе"]
+
+
+async def test_screenshot_stays_for_follow_up_but_never_reaches_disk(config):
+    agent, llm, _, now = make_with_screen(
+        config, [call("look_at_screen"), call("say", "2", text="а"), call("say", "3", text="б")]
+    )
+    await agent.handle([viewer("какой перк?")])
+    now[0] += 240
+    await agent.handle([viewer("а третий?")])
+    assert images_in(llm.requests[-1][0]) == ["data:image/jpeg;base64,SHOT1"]
+    saved = (config.data_dir / "history.json").read_text(encoding="utf-8")
+    assert "base64" not in saved
+    assert SCREENSHOT_GONE in saved
+
+
+async def test_screenshot_expires_after_ttl(config):
+    agent, llm, _, now = make_with_screen(
+        config, [call("look_at_screen"), call("say", "2", text="а"), call("say", "3", text="б")]
+    )
+    await agent.handle([viewer("какой перк?")])
+    now[0] += config.screenshot_ttl_seconds + 1
+    await agent.handle([viewer("а третий?")])
+    last = llm.requests[-1][0]
+    assert images_in(last) == []
+    assert any(message.get("content") == SCREENSHOT_GONE for message in last)
+
+
+async def test_new_screenshot_replaces_old_one(config):
+    agent, llm, _, now = make_with_screen(config, [
+        call("look_at_screen"), call("say", "2", text="а"),
+        call("look_at_screen", "3"), call("say", "4", text="б"),
+    ])
+    await agent.handle([viewer("что на экране?")])
+    now[0] += 60
+    await agent.handle([viewer("а теперь?")])
+    assert images_in(llm.requests[-1][0]) == ["data:image/jpeg;base64,SHOT2"]
+
+
+async def test_compaction_drops_screenshot(config):
+    config = replace(config, history_high_tokens=100, history_low_tokens=50)
+    agent, llm, _, _ = make_with_screen(
+        config, [call("look_at_screen"), call("say", "2", text="а"), call("stay_silent", "3")]
+    )
+    llm.prompt_tokens = 1000
+    await agent.handle([viewer("что на экране?")])
+    assert images_in(agent.history) == []
+    assert agent.screenshot_taken is None
+
+
+async def test_screenshot_without_client_is_an_error_for_model(config):
+    agent, llm, _, _ = make(config, [call("look_at_screen"), call("stay_silent", "2")])
+    await agent.handle([viewer("шери, что на экране?")])
+    tool_reply = llm.requests[1][0][-1]
+    assert tool_reply["role"] == "tool"
+    assert tool_reply["content"].startswith("ошибка: экран не подключён")
